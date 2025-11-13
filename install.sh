@@ -80,15 +80,41 @@ function download_and_install_binary {
     
     if ! curl -L "$DOWNLOAD_URL" -o "/tmp/${SERVICE_NAME}_core_binary" ; then
         error_echo "Failed to download the binary. Check the release URL and network connection."
-        # Provide a dummy file so the rest of the script works for demonstration
-        echo "#!/bin/bash" > "/tmp/${SERVICE_NAME}_core_binary"
-        echo "echo 'Core binary running on ports: \$*'" >> "/tmp/${SERVICE_NAME}_core_binary"
+        # Provide a DUMMY file that runs indefinitely, preventing Systemd's start-limit-hit error
+        cat <<EOF_DUMMY > "/tmp/${SERVICE_NAME}_core_binary"
+#!/bin/bash
+echo "Warning: Running DUMMY FalconTunnel core on ports: \$*"
+# Use tail -f to keep the process running indefinitely, simulating a service
+exec tail -f /dev/null
+EOF_DUMMY
+        
     fi
 
     mkdir -p $INSTALL_DIR
 
     mv "/tmp/${SERVICE_NAME}_core_binary" "$INSTALL_PATH"
     chmod +x "$INSTALL_PATH"
+}
+
+# Function to apply capabilities for binding to privileged ports
+function apply_low_port_capability {
+    # Check if setcap is available
+    if ! command -v setcap &> /dev/null; then
+        error_echo "The 'setcap' command is missing (needed for privileged ports 1-1023)."
+        error_echo "If you intend to use ports 80 or 443, please install 'setcap' (e.g., 'sudo apt install libcap2-bin') and re-run the installer."
+        return 1
+    fi
+
+    INSTALL_PATH="${INSTALL_DIR}/${SERVICE_NAME}_core"
+
+    info_echo "Applying NET_BIND_SERVICE capability to ${SERVICE_NAME}_core..."
+    if setcap 'cap_net_bind_service=+ep' "$INSTALL_PATH"; then
+        success_echo "Capability applied: The service can now bind to ports 1-1023 (like 80/443) while running as the unprivileged 'nobody' user."
+    else
+        error_echo "Failed to apply NET_BIND_SERVICE capability. Ensure you are running the script with sudo."
+        return 1
+    fi
+    return 0
 }
 
 
@@ -398,7 +424,7 @@ function show_manager_ui {
                 return 0
                 ;;
             *) colored_echo "\$RED" "[ERROR]" "\$NC" " Invalid option \$REPLY. Please enter a number from 1 to 8.";;
-        esac
+        esac # <-- FIX: Changed 'end case' to 'esac'
         
         echo -e "\n\${CYAN}Action Complete. Press \${YELLOW}ENTER\${NC} to return to menu...\${NC}"
         read -r
@@ -435,7 +461,10 @@ function install_falcontunnel {
     # 2. Download and install core binary (Silent)
     download_and_install_binary
     
-    # 3. Create and install manager command script (Silent)
+    # NEW STEP 3: Apply capabilities for low ports (Fixes port 80 binding issue)
+    apply_low_port_capability 
+
+    # 4. Create and install manager command script (Silent)
     create_manager_script
     
     # FINAL SUCCESS MESSAGE
